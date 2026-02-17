@@ -1,116 +1,145 @@
 import requests
-import pandas as pd
 import time
 from datetime import datetime
 
-# ===== تنظیمات تلگرام =====
-TELEGRAM_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
+# =============================
+# Telegram Settings
+# =============================
+
+BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
 CHAT_ID = "7107618784"
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=payload)
-
-# ===== تنظیمات استراتژی =====
-DELTA = 0.001
-SYMBOL = "near-usdt"
-CURRENCY = "usd"
-
-LEVERAGE = 20
-TARGET_MOVE = 0.20 / LEVERAGE
-STOP_MOVE = 0.50 / LEVERAGE
-
-# ===== گرفتن داده از CoinGecko =====
-def fetch_ohlc(symbol, currency, days, interval_minutes):
-    url = f"https://api.coingecko.com/api/v3/coins/{symbol}/ohlc?vs_currency={currency}&days={days}"
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
     try:
-        data = requests.get(url).json()
-        df = pd.DataFrame(data, columns=["time","open","high","low","close"])
-        df['time'] = pd.to_datetime(df['time'], unit='ms')
-        df = df.sort_values("time").reset_index(drop=True)
-        return df
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
-        print("خطا در گرفتن داده:", e)
-        return pd.DataFrame(columns=["time","open","high","low","close"])
+        print("Telegram send error:", e)
 
-# ===== هشدار عبور از محدوده 4H =====
-def check_alert(candle_5m, high_4h, low_4h):
-    if candle_5m['close'] >= high_4h*(1+DELTA):
-        return 'above'
-    elif candle_5m['close'] <= low_4h*(1-DELTA):
-        return 'below'
-    return None
+# =============================
+# Strategy Settings
+# =============================
 
-# ===== بررسی ورود =====
-def check_entry(candle_5m, high_4h, low_4h, alert_type):
-    if alert_type == 'above' and candle_5m['close'] <= high_4h*(1-DELTA):
-        return 'SHORT'
-    elif alert_type == 'below' and candle_5m['close'] >= low_4h*(1+DELTA):
-        return 'LONG'
-    return None
+SYMBOL = "NEAR-USDT"
+DELTA = 0.001
+LEVERAGE = 20
+TARGET_MOVE = 0.01     # 1% price move
+STOP_MOVE = 0.025      # 2.5% price move
 
-# ===== بررسی تارگت و استاپ با کندل 1 دقیقه =====
-def check_target_stop(entry_price, direction, candle_1m):
-    if direction == "LONG":
-        if candle_1m['high'] >= entry_price*(1 + TARGET_MOVE):
-            return "TARGET"
-        elif candle_1m['low'] <= entry_price*(1 - STOP_MOVE):
-            return "STOP"
-    elif direction == "SHORT":
-        if candle_1m['low'] <= entry_price*(1 - TARGET_MOVE):
-            return "TARGET"
-        elif candle_1m['high'] >= entry_price*(1 + STOP_MOVE):
-            return "STOP"
-    return None
-
-# ===== حلقه اصلی =====
 active_trade = None
+alert_type = None
+
+send_telegram_message("🤖 OKX Bot Online Started!")
+
+# =============================
+# OKX Public API Candles
+# =============================
+
+def get_okx_candles(bar):
+    """
+    Fetch candles from OKX public REST API
+    bar: "1m", "5m", "4h"
+    """
+    url = f"https://www.okx.com/api/v5/market/candles?instId={SYMBOL}&bar={bar}"
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if "data" in data:
+            return data["data"]
+        return []
+    except Exception as e:
+        print("Error fetching OKX candles:", e)
+        return []
+
+# =============================
+# Main Loop
+# =============================
 
 while True:
-    # داده‌های 5 دقیقه‌ای و 4 ساعته
-    df_5m = fetch_ohlc(SYMBOL, CURRENCY, days=1, interval_minutes=5)
-    df_4h = fetch_ohlc(SYMBOL, CURRENCY, days=7, interval_minutes=240)
+    try:
+        # get fresh market candles
+        candles_4h = get_okx_candles("4h")
+        candles_5m = get_okx_candles("5m")
+        candles_1m = get_okx_candles("1m")
 
-    if df_5m.empty or df_4h.empty:
-        time.sleep(30)
-        continue
-
-    latest_4h = df_4h.iloc[-1]
-    high_4h = latest_4h['high']
-    low_4h = latest_4h['low']
-
-    latest_5m = df_5m.iloc[-1]
-
-    # ===== بررسی هشدار =====
-    if not active_trade:
-        alert_type = check_alert(latest_5m, high_4h, low_4h)
-        if alert_type:
-            send_telegram(f"⚠️ هشدار عبور از محدوده 4H: {alert_type.upper()} در {latest_5m['time']}")
-            
-            entry = check_entry(latest_5m, high_4h, low_4h, alert_type)
-            if entry:
-                active_trade = {
-                    "direction": entry,
-                    "entry_price": latest_5m['close'],
-                    "time": latest_5m['time']
-                }
-                send_telegram(f"🚀 ورود به معامله: {entry} | قیمت: {latest_5m['close']} | زمان: {latest_5m['time']}")
-
-    # ===== بررسی تارگت یا استاپ اگر معامله باز است =====
-    if active_trade:
-        df_1m = fetch_ohlc(SYMBOL, CURRENCY, days=1, interval_minutes=1)
-        if df_1m.empty:
-            time.sleep(30)
+        if not candles_4h or not candles_5m or not candles_1m:
+            time.sleep(15)
             continue
 
-        # کندل‌های 1 دقیقه بعد از ورود
-        df_1m_slice = df_1m[df_1m['time'] >= active_trade['time']].reset_index(drop=True)
-        for idx, candle_1m in df_1m_slice.iterrows():
-            result = check_target_stop(active_trade['entry_price'], active_trade['direction'], candle_1m)
-            if result:
-                send_telegram(f"✅ معامله {active_trade['direction']} {result} | قیمت: {candle_1m['close']} | زمان: {candle_1m['time']}")
-                active_trade = None
-                break
+        # =================================
+        # 4H Reference (last completed candle)
+        # =================================
+        # index 1 is last complete candle if 0 is possibly incomplete
+        candle_4h = candles_4h[1]  
+        high_4h = float(candle_4h[2])
+        low_4h  = float(candle_4h[3])
 
-    time.sleep(30)
+        # =================================
+        # 5m Close
+        # =================================
+        candle_5m = candles_5m[1]
+        close_5m = float(candle_5m[4])
+        time_5m = datetime.utcfromtimestamp(int(candle_5m[0])/1000)
+
+        # ===== Alert Logic =====
+        if active_trade is None:
+            if close_5m >= high_4h*(1 + DELTA):
+                alert_type = "above"
+                send_telegram_message(f"⚠️ Alert ABOVE 4H (5m close)\nTime: {time_5m}\nPrice: {close_5m}")
+            elif close_5m <= low_4h*(1 - DELTA):
+                alert_type = "below"
+                send_telegram_message(f"⚠️ Alert BELOW 4H (5m close)\nTime: {time_5m}\nPrice: {close_5m}")
+
+        # ===== Entry Logic =====
+        if active_trade is None and alert_type:
+            if alert_type=="above" and close_5m <= high_4h*(1 - DELTA):
+                entry = close_5m
+                tgt = entry * (1 - TARGET_MOVE)
+                stp = entry * (1 + STOP_MOVE)
+                send_telegram_message(
+                    f"🚀 ENTRY SHORT\nEntry: {entry:.4f}\nTarget: {tgt:.4f}\nStop: {stp:.4f}"
+                )
+                active_trade = {"dir":"SHORT","entry":entry,"target":tgt,"stop":stp}
+                alert_type=None
+
+            elif alert_type=="below" and close_5m >= low_4h*(1 + DELTA):
+                entry = close_5m
+                tgt = entry * (1 + TARGET_MOVE)
+                stp = entry * (1 - STOP_MOVE)
+                send_telegram_message(
+                    f"🚀 ENTRY LONG\nEntry: {entry:.4f}\nTarget: {tgt:.4f}\nStop: {stp:.4f}"
+                )
+                active_trade = {"dir":"LONG","entry":entry,"target":tgt,"stop":stp}
+                alert_type=None
+
+        # ===== Target / Stop Monitoring with 1m candles =====
+        if active_trade:
+            for c in candles_1m:
+                price_high = float(c[2])
+                price_low  = float(c[3])
+                if active_trade["dir"]=="LONG":
+                    if price_high >= active_trade["target"]:
+                        send_telegram_message(f"✅ LONG TARGET REACHED\nTarget: {active_trade['target']:.4f}")
+                        active_trade = None
+                        break
+                    elif price_low <= active_trade["stop"]:
+                        send_telegram_message(f"❌ LONG STOP HIT\nStop: {active_trade['stop']:.4f}")
+                        active_trade = None
+                        break
+                else:  # SHORT
+                    if price_low <= active_trade["target"]:
+                        send_telegram_message(f"✅ SHORT TARGET REACHED\nTarget: {active_trade['target']:.4f}")
+                        active_trade = None
+                        break
+                    elif price_high >= active_trade["stop"]:
+                        send_telegram_message(f"❌ SHORT STOP HIT\nStop: {active_trade['stop']:.4f}")
+                        active_trade = None
+                        break
+
+        # wait before next check
+        time.sleep(30)
+
+    except Exception as e:
+        print("Error Loop:", e)
+        time.sleep(30)
