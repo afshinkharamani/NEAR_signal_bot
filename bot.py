@@ -30,7 +30,6 @@ SYMBOL = "NEAR-USDT"
 # ==============================
 # توابع استراتژی (کد x)
 # ==============================
-
 def check_alert(candle_5m, high_4h, low_4h):
     if candle_5m['close'] >= high_4h * (1 + DELTA):
         return 'above'
@@ -61,7 +60,7 @@ def get_4h_candle_for_now():
     return start, end
 
 # ==============================
-# دریافت کندل‌ها از OKX
+# دریافت کندل‌ها از OKX (اصلاح شده)
 # ==============================
 def get_okx_candles(interval="5m", limit=50):
     url = f"https://www.okx.com/api/v5/market/history-candles?instId={SYMBOL}&bar={interval}&limit={limit}"
@@ -69,10 +68,12 @@ def get_okx_candles(interval="5m", limit=50):
         r = requests.get(url, timeout=10)
         data = r.json()
         if "data" in data:
-            # تبدیل به DataFrame
-            df = pd.DataFrame(data["data"], columns=["time","open","high","low","close","volume","extra1","extra2","extra3","extra4"])
+            # تبدیل به DataFrame با ۹ ستون صحیح
+            df = pd.DataFrame(data["data"], columns=[
+                "time","open","high","low","close","volume","quote_volume","count","unknown"
+            ])
             df['time'] = pd.to_datetime(df['time'], unit='ms')
-            for col in ['open','high','low','close','volume']:
+            for col in ['open','high','low','close','volume','quote_volume']:
                 df[col] = df[col].astype(float)
             return df
         else:
