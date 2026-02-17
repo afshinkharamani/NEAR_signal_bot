@@ -60,7 +60,7 @@ def get_4h_candle_for_now():
     return start, end
 
 # ==============================
-# دریافت کندل‌ها از OKX (اصلاح شده)
+# دریافت کندل‌ها از OKX (اصلاح شده برای overflow)
 # ==============================
 def get_okx_candles(interval="5m", limit=50):
     url = f"https://www.okx.com/api/v5/market/history-candles?instId={SYMBOL}&bar={interval}&limit={limit}"
@@ -68,11 +68,12 @@ def get_okx_candles(interval="5m", limit=50):
         r = requests.get(url, timeout=10)
         data = r.json()
         if "data" in data:
-            # تبدیل به DataFrame با ۹ ستون صحیح
             df = pd.DataFrame(data["data"], columns=[
                 "time","open","high","low","close","volume","quote_volume","count","unknown"
             ])
-            df['time'] = pd.to_datetime(df['time'], unit='ms')
+            # تبدیل safe با errors='coerce' برای جلوگیری از overflow
+            df['time'] = pd.to_datetime(df['time'], unit='ms', errors='coerce')
+            df = df.dropna(subset=['time'])  # حذف ردیف‌هایی که زمان درست نیست
             for col in ['open','high','low','close','volume','quote_volume']:
                 df[col] = df[col].astype(float)
             return df
