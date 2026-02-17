@@ -1,4 +1,5 @@
-python-telegram-bot>=20.0.0
 pandas
 requests
-
+python-binance
+websocket-client
+python-telegram-bot
