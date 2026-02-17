@@ -1,6 +1,5 @@
 import requests
 import time
-import traceback
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -21,145 +20,126 @@ def send_telegram_message(text):
 # ==============================
 # تنظیمات استراتژی
 # ==============================
-LEVERAGE = 20
 DELTA = 0.001
-TARGET_MOVE = 0.01   # 1% تغییر قیمت برای تارگت
-STOP_MOVE = 0.025    # 2.5% تغییر قیمت برای استاپ
-CANDLE_5M_INTERVAL = 300  # ثانیه
-CANDLE_1M_INTERVAL = 60   # ثانیه
+LEVERAGE = 20
+TARGET_MOVE = 0.01        # 1% روی قیمت
+STOP_MOVE = 0.025         # 2.5% روی قیمت
 
+SYMBOL = "NEAR-USDT"
+
+# ==============================
+# گرفتن کندل از OKX (Futures)
+# ==============================
+def get_okx_candles(interval="1m", limit=50):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={SYMBOL}&bar={interval}&limit={limit}"
+    try:
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if "data" in data:
+            return data["data"]  # هر کندل: [ts, o, h, l, c, vol]
+        return []
+    except:
+        print("خطا در گرفتن داده")
+        return []
+
+# ==============================
+# منطق استراتژی
+# ==============================
+last_alert = None
 active_trade = None
-alert_type = None
-last_5m_close = None
 
-# ==============================
-# گرفتن قیمت و کندل از OKX
-# ==============================
-def get_5m_candle():
-    url = "https://www.okx.com/api/v5/market/history-candles?instId=NEAR-USDT&bar=5m&limit=2"
-    try:
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if 'data' in data and len(data['data']) > 0:
-            # آخرین کندل بسته شده
-            return data['data'][0]  # [ts, open, high, low, close, volume]
-        else:
-            return None
-    except Exception as e:
-        print("خطا در گرفتن کندل 5 دقیقه‌ای:", e)
-        return None
-
-def get_1m_candle():
-    url = "https://www.okx.com/api/v5/market/history-candles?instId=NEAR-USDT&bar=1m&limit=2"
-    try:
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        if 'data' in data and len(data['data']) > 0:
-            return data['data'][0]  # [ts, open, high, low, close, volume]
-        else:
-            return None
-    except Exception as e:
-        print("خطا در گرفتن کندل 1 دقیقه‌ای:", e)
-        return None
-
-# ==============================
-# منطق هشدار و ورود
-# ==============================
-def check_alert_and_entry(candle):
-    global alert_type
-    high_4h = candle['high']
-    low_4h = candle['low']
-    close = candle['close']
-
-    if close >= high_4h * (1 + DELTA):
-        alert_type = 'above'
-        return 'ALERT'
-    elif close <= low_4h * (1 - DELTA):
-        alert_type = 'below'
-        return 'ALERT'
-    return None
-
-def check_entry(candle, high_4h, low_4h):
-    close = candle['close']
-    if alert_type == 'above' and close <= high_4h * (1 - DELTA):
-        return 'SHORT'
-    elif alert_type == 'below' and close >= low_4h * (1 + DELTA):
-        return 'LONG'
-    return None
-
-# ==============================
-# باز کردن معامله
-# ==============================
-def open_trade(direction, entry_price):
-    return {
-        "direction": direction,
-        "entry_price": entry_price,
-        "target": entry_price * (1 + TARGET_MOVE if direction=="LONG" else 1 - TARGET_MOVE),
-        "stop": entry_price * (1 - STOP_MOVE if direction=="LONG" else 1 + STOP_MOVE)
-    }
-
-# ==============================
-# حلقه اصلی
-# ==============================
 print("🤖 ربات آنلاین شروع شد...")
 
 while True:
     try:
-        # ==============================
-        # کندل 5 دقیقه‌ای
-        # ==============================
-        candle_5m_data = get_5m_candle()
-        if candle_5m_data:
-            ts, o, h, l, c, v = candle_5m_data
-            candle_5m = {"time": datetime.fromtimestamp(int(ts)/1000), "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
-            
-            # فقط وقتی کلوز 5 دقیقه‌ای تغییر کرده
-            if last_5m_close != candle_5m['close']:
-                last_5m_close = candle_5m['close']
+        # --- کندل ۴ ساعته (مرجع)
+        candles_4h = get_okx_candles(interval="4H", limit=2)
+        if not candles_4h:
+            time.sleep(60)
+            continue
+        last_candle_4h = candles_4h[-2]  # کندل مرجع = کندل قبلی بسته شده
+        ts_4h, o4, h4, l4, c4, v4 = last_candle_4h
+        high_4h = float(h4)
+        low_4h = float(l4)
 
-                alert = check_alert_and_entry(candle_5m)
-                if alert:
-                    send_telegram_message(f"⚠️ هشدار ۵ دقیقه‌ای! کندل بسته شد: {candle_5m['time']}\nنوع هشدار: {alert_type}")
+        # --- کندل ۵ دقیقه‌ای (برای ورود)
+        candles_5m = get_okx_candles(interval="5m", limit=5)
+        if not candles_5m:
+            time.sleep(60)
+            continue
+        last_candle_5m = candles_5m[-1]  # کندل آخر بسته شده
+        ts_5m, o5, h5, l5, c5, v5 = last_candle_5m
+        close_5m = float(c5)
+        ts_5m_dt = datetime.fromtimestamp(int(ts_5m)/1000)
 
-                    # بررسی ورود
-                    entry_signal = check_entry(candle_5m, candle_5m['high'], candle_5m['low'])
-                    if entry_signal:
-                        active_trade = open_trade(entry_signal, candle_5m['close'])
-                        send_telegram_message(
-                            f"🚀 ورود {entry_signal}!\nقیمت ورود: {active_trade['entry_price']}\nتارگت: {active_trade['target']}\nاستاپ: {active_trade['stop']}"
-                        )
+        # --- بررسی هشدار
+        alert_type = None
+        if close_5m >= high_4h * (1 + DELTA):
+            alert_type = "above"
+        elif close_5m <= low_4h * (1 - DELTA):
+            alert_type = "below"
 
-        # ==============================
-        # کندل 1 دقیقه‌ای برای رسیدن به تارگت یا استاپ
-        # ==============================
+        if alert_type and last_alert != alert_type:
+            last_alert = alert_type
+            send_telegram_message(f"⚠️ هشدار کندل ۵ دقیقه‌ای: {alert_type.upper()} | زمان: {ts_5m_dt} | قیمت کلوز: {close_5m}")
+
+        # --- بررسی ورود به معامله
+        if alert_type and not active_trade:
+            entry_price = close_5m
+            direction = "SHORT" if alert_type=="above" else "LONG"
+            if direction == "LONG":
+                target = entry_price * (1 + TARGET_MOVE)
+                stop = entry_price * (1 - STOP_MOVE)
+            else:
+                target = entry_price * (1 - TARGET_MOVE)
+                stop = entry_price * (1 + STOP_MOVE)
+
+            active_trade = {
+                "direction": direction,
+                "entry_price": entry_price,
+                "target": target,
+                "stop": stop,
+                "start_time": ts_5m_dt
+            }
+
+            send_telegram_message(
+                f"🚀 ورود به معامله {direction}\n"
+                f"⏰ زمان: {ts_5m_dt}\n"
+                f"💵 قیمت ورود: {entry_price}\n"
+                f"🎯 تارگت: {target}\n"
+                f"⛔ استاپ: {stop}"
+            )
+
+        # --- بررسی کندل ۱ دقیقه‌ای برای تارگت و استاپ
         if active_trade:
-            candle_1m_data = get_1m_candle()
-            if candle_1m_data:
-                ts, o, h, l, c, v = candle_1m_data
-                candle_1m = {"high": float(h), "low": float(l)}
-                
+            candles_1m = get_okx_candles(interval="1m", limit=10)
+            for c in candles_1m:
+                ts1, o1, h1, l1, c1, v1 = c
+                o1 = float(o1); h1=float(h1); l1=float(l1); c1=float(c1)
+                ts1_dt = datetime.fromtimestamp(int(ts1)/1000)
+
                 closed = False
-                if active_trade['direction'] == "LONG":
-                    if candle_1m['high'] >= active_trade['target']:
-                        send_telegram_message(f"✅ LONG به تارگت رسید! ({active_trade['target']})")
+                if active_trade["direction"] == "LONG":
+                    if h1 >= active_trade["target"]:
+                        send_telegram_message(f"✅ LONG تارگت رسید | زمان: {ts1_dt} | قیمت: {active_trade['target']}")
                         closed = True
-                    elif candle_1m['low'] <= active_trade['stop']:
-                        send_telegram_message(f"❌ LONG به استاپ رسید! ({active_trade['stop']})")
+                    elif l1 <= active_trade["stop"]:
+                        send_telegram_message(f"❌ LONG استاپ خورد | زمان: {ts1_dt} | قیمت: {active_trade['stop']}")
                         closed = True
-                elif active_trade['direction'] == "SHORT":
-                    if candle_1m['low'] <= active_trade['target']:
-                        send_telegram_message(f"✅ SHORT به تارگت رسید! ({active_trade['target']})")
+                else:
+                    if l1 <= active_trade["target"]:
+                        send_telegram_message(f"✅ SHORT تارگت رسید | زمان: {ts1_dt} | قیمت: {active_trade['target']}")
                         closed = True
-                    elif candle_1m['high'] >= active_trade['stop']:
-                        send_telegram_message(f"❌ SHORT به استاپ رسید! ({active_trade['stop']})")
+                    elif h1 >= active_trade["stop"]:
+                        send_telegram_message(f"❌ SHORT استاپ خورد | زمان: {ts1_dt} | قیمت: {active_trade['stop']}")
                         closed = True
-                
+
                 if closed:
-                    active_trade = None  # معامله بسته شد
+                    active_trade = None
+                    break
 
-        time.sleep(30)  # هر 30 ثانیه
+        time.sleep(60)  # هر ۱ دقیقه
 
-    except Exception:
-        print("FULL ERROR:")
-        traceback.print_exc()
-        time.sleep(30)
+    except Exception as e:
+        print("FULL ERROR:", e)
+        time.sleep(60)
