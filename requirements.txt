@@ -1,2 +1,4 @@
-requests
+
 pandas
+requests
+python-telegram-bot==13.17
