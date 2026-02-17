@@ -1,129 +1,85 @@
 import pandas as pd
-import requests
-import time
-import telegram
-from datetime import datetime, timedelta
 import websocket
 import json
+from datetime import datetime, timedelta
+from telegram import Bot
 
-# -----------------------------
-# تنظیمات تلگرام
+# ======= تنظیمات تلگرام =======
 TELEGRAM_BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
 CHAT_ID = "7107618784"
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# ارسال پیام آزمایشی برای تایید اتصال
-bot.send_message(chat_id=CHAT_ID, text="ربات NEAR Signal Bot وصل شد ✅")
+# پیام اول که ربات وصل شد
+bot.send_message(chat_id=CHAT_ID, text="ربات وصل شد ✅")
 
-# -----------------------------
-# تنظیمات استراتژی
+# ======= تنظیمات استراتژی =======
 DELTA = 0.001
-TARGET_MOVE = 0.2   # 20% روی سرمایه (تنظیم به درصد دلخواه)
-STOP_MOVE = 0.5     # 50% روی سرمایه
-SYMBOL = "NEARUSDT"
+TARGET_MOVE = 0.20    # 20% تارگت
+STOP_MOVE = 0.50      # 50% استاپ
+LEVERAGE = 20
 
-# -----------------------------
-# دریافت کندل‌های عمومی Binance
-def get_klines(symbol, interval, limit=500):
-    url = f'https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}'
-    r = requests.get(url)
-    data = r.json()
-    df = pd.DataFrame(data, columns=['open_time','open','high','low','close','volume',
-                                     'close_time','quote_asset_volume','number_of_trades',
-                                     'taker_buy_base','taker_buy_quote','ignore'])
-    df['time'] = pd.to_datetime(df['open_time'], unit='ms')
-    df[['open','high','low','close','volume']] = df[['open','high','low','close','volume']].astype(float)
-    return df
+# نمونه داده ۴ ساعته (برای مثال، می‌تونی آنلاین هم دریافت کنی)
+high_4h = 1.0000
+low_4h = 0.9900
 
-# -----------------------------
-# بررسی کندل هشدار
-def check_alert(candle_5m, high_4h, low_4h):
-    if candle_5m['close'] >= high_4h * (1 + DELTA):
-        return 'above'
-    elif candle_5m['close'] <= low_4h * (1 - DELTA):
-        return 'below'
-    return None
-
-# بررسی کندل ورود
-def check_entry(candle_5m, high_4h, low_4h, alert_type):
-    if alert_type == 'above' and candle_5m['close'] <= high_4h * (1 - DELTA):
-        return 'SHORT'
-    elif alert_type == 'below' and candle_5m['close'] >= low_4h * (1 + DELTA):
-        return 'LONG'
-    return None
-
-# -----------------------------
-# ردیابی معامله فعال
+# وضعیت معامله فعال
 active_trade = None
-alert_type_global = None
-high_4h_global = None
-low_4h_global = None
 
-print("شروع ربات NEAR Signal...")
+# تابع بررسی سیگنال ورود
+def check_signal(candle_5m_close):
+    global active_trade
+    if active_trade:
+        return None
+    if candle_5m_close > low_4h * (1 + DELTA):
+        active_trade = {"direction": "LONG", "entry_price": candle_5m_close, "time": datetime.now()}
+        bot.send_message(chat_id=CHAT_ID, text=f"⚡ LONG ENTRY: {candle_5m_close}")
+    elif candle_5m_close < high_4h * (1 - DELTA):
+        active_trade = {"direction": "SHORT", "entry_price": candle_5m_close, "time": datetime.now()}
+        bot.send_message(chat_id=CHAT_ID, text=f"⚡ SHORT ENTRY: {candle_5m_close}")
 
-while True:
-    try:
-        # کندل 4 ساعته و 5 دقیقه‌ای
-        df_4h = get_klines(SYMBOL, "4h", limit=2)
-        df_5m = get_klines(SYMBOL, "5m", limit=50)
-        df_1m = get_klines(SYMBOL, "1m", limit=200)
+# تابع بررسی استاپ و تارگت
+def check_exit(candle_1m_high, candle_1m_low):
+    global active_trade
+    if not active_trade:
+        return
+    direction = active_trade["direction"]
+    entry = active_trade["entry_price"]
+    if direction == "LONG":
+        if candle_1m_high >= entry * (1 + TARGET_MOVE):
+            bot.send_message(chat_id=CHAT_ID, text=f"✅ LONG TARGET HIT: {entry * (1 + TARGET_MOVE)}")
+            active_trade.clear()
+        elif candle_1m_low <= entry * (1 - STOP_MOVE):
+            bot.send_message(chat_id=CHAT_ID, text=f"❌ LONG STOP HIT: {entry * (1 - STOP_MOVE)}")
+            active_trade.clear()
+    elif direction == "SHORT":
+        if candle_1m_low <= entry * (1 - TARGET_MOVE):
+            bot.send_message(chat_id=CHAT_ID, text=f"✅ SHORT TARGET HIT: {entry * (1 - TARGET_MOVE)}")
+            active_trade.clear()
+        elif candle_1m_high >= entry * (1 + STOP_MOVE):
+            bot.send_message(chat_id=CHAT_ID, text=f"❌ SHORT STOP HIT: {entry * (1 + STOP_MOVE)}")
+            active_trade.clear()
 
-        # آخرین کندل 4 ساعت
-        candle_4h = df_4h.iloc[-2]
-        high_4h_global = candle_4h['high']
-        low_4h_global = candle_4h['low']
+# ======= اتصال به وب‌سوکت Binance =======
+def on_message(ws, message):
+    data = json.loads(message)
+    candle = data['k']
+    if candle['x']:  # کندل بسته شد
+        close_5m = float(candle['c'])
+        check_signal(close_5m)
+        # بررسی استاپ و تارگت با کندل 1 دقیقه‌ای (می‌تونی جدا وصل کنی)
+        # check_exit(high_1m, low_1m)
 
-        # بررسی کندل هشدار 5 دقیقه‌ای
-        for i, candle_5m in df_5m.iterrows():
-            alert = check_alert(candle_5m, high_4h_global, low_4h_global)
-            if alert:
-                alert_type_global = alert
-                bot.send_message(chat_id=CHAT_ID, text=f"⚡ هشدار {alert.upper()} در کندل 5 دقیقه‌ای ساعت {candle_5m['time']}")
-                break
+def on_error(ws, error):
+    print("WebSocket Error:", error)
 
-        # بررسی ورود
-        if alert_type_global and active_trade is None:
-            for j in range(i+1, len(df_5m)):
-                candle_5m = df_5m.iloc[j]
-                entry = check_entry(candle_5m, high_4h_global, low_4h_global, alert_type_global)
-                if entry:
-                    active_trade = {
-                        "direction": entry,
-                        "entry_price": candle_5m['close'],
-                        "start_time": candle_5m['time']
-                    }
-                    bot.send_message(chat_id=CHAT_ID, text=f"🚀 ورود {entry} در قیمت {candle_5m['close']} ساعت {candle_5m['time']}")
-                    break
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket Closed")
 
-        # بررسی رسیدن به تارگت یا استاپ با کندل 1 دقیقه‌ای
-        if active_trade:
-            for k, candle_1m in df_1m.iterrows():
-                price_high = candle_1m['high']
-                price_low = candle_1m['low']
+def on_open(ws):
+    print("WebSocket Opened")
 
-                trade_closed = False
-                if active_trade['direction'] == "LONG":
-                    if price_high >= active_trade['entry_price'] * (1 + TARGET_MOVE):
-                        bot.send_message(chat_id=CHAT_ID, text=f"✅ تارگت LONG رسید به {active_trade['entry_price']*(1+TARGET_MOVE)}")
-                        trade_closed = True
-                    elif price_low <= active_trade['entry_price'] * (1 - STOP_MOVE):
-                        bot.send_message(chat_id=CHAT_ID, text=f"❌ استاپ LONG فعال شد {active_trade['entry_price']*(1-STOP_MOVE)}")
-                        trade_closed = True
-                elif active_trade['direction'] == "SHORT":
-                    if price_low <= active_trade['entry_price'] * (1 - TARGET_MOVE):
-                        bot.send_message(chat_id=CHAT_ID, text=f"✅ تارگت SHORT رسید به {active_trade['entry_price']*(1-TARGET_MOVE)}")
-                        trade_closed = True
-                    elif price_high >= active_trade['entry_price'] * (1 + STOP_MOVE):
-                        bot.send_message(chat_id=CHAT_ID, text=f"❌ استاپ SHORT فعال شد {active_trade['entry_price']*(1+STOP_MOVE)}")
-                        trade_closed = True
-
-                if trade_closed:
-                    active_trade = None
-                    alert_type_global = None
-                    break
-
-        time.sleep(60)  # هر 1 دقیقه بررسی کندل‌ها
-
-    except Exception as e:
-        bot.send_message(chat_id=CHAT_ID, text=f"⚠️ خطا در ربات: {str(e)}")
-        time.sleep(60)
+# مثال اتصال به کندل ۵ دقیقه‌ای NEARUSDT
+socket_url = "wss://stream.binance.com:9443/ws/nearusdt@kline_5m"
+ws = websocket.WebSocketApp(socket_url, on_message=on_message, on_error=on_error, on_close=on_close)
+ws.on_open = on_open
+ws.run_forever()
