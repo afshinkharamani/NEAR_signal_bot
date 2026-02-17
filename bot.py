@@ -1,4 +1,4 @@
-# bot.py
+# bot_testnet.py
 import json
 import time
 import requests
@@ -27,7 +27,6 @@ last_signal_time = None
 def send_signal(side, price, extra=""):
     global last_signal_time
     now = datetime.now()
-    # جلوگیری از ارسال چندباره سیگنال در یک دقیقه
     if last_signal_time and (now - last_signal_time).total_seconds() < 60:
         return
     last_signal_time = now
@@ -103,16 +102,16 @@ def manage_trade(candle):
         print("Trade closed:", active_trade)
         active_trade = None
 
-# ================== دریافت داده زنده از Bybit ==================
+# ================== دریافت داده زنده از Bybit Testnet ==================
 def start_bot():
-    ws_url = "wss://stream.bybit.com/spot/quote/ws"
+    ws_url = "wss://stream-testnet.bybit.com/spot/quote/ws"
     try:
         ws = create_connection(ws_url)
     except Exception as e:
         print("WebSocket connection error:", e)
         return
 
-    print("Connected to Bybit WebSocket")
+    print("Connected to Bybit Testnet WebSocket")
     send_signal("INFO", 0, "ربات وصل شد ✅")
 
     # subscribe به کندل‌های 1m, 5m, 4h
@@ -165,7 +164,7 @@ def start_bot():
 
         except Exception as e:
             print("Error in main loop:", e)
-            time.sleep(1)  # جلوگیری از کرش مداوم
+            time.sleep(1)
 
 if __name__ == "__main__":
     start_bot()
