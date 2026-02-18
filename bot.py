@@ -4,14 +4,15 @@ import traceback
 from datetime import datetime, timedelta
 import pandas as pd
 
-BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"  # جایگزین توکن واقعی
-CHAT_ID = "7107618784"  # جایگزین چت واقعی
+BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
+CHAT_ID = "7107618784"
 
 LEVERAGE = 20
 TARGET_MOVE_PRICE = 0.01
 STOP_MOVE_PRICE = 0.025
 DELTA = 0.001
 SYMBOL = "NEAR-USDT"
+CAPITAL = 100  # سرمایه اولیه کامپاند
 
 last_processed_4h_time = None
 last_no_signal_time = None
@@ -26,15 +27,12 @@ def send_telegram_message(text, retries=3):
             if r.status_code == 200:
                 print(f"Telegram message sent: {text}")
                 return True
-            else:
-                print(f"Telegram failed, status {r.status_code}, attempt {attempt+1}")
-        except Exception as e:
-            print(f"Telegram send error attempt {attempt+1}: {e}")
+        except:
+            pass
         time.sleep(5)
-    print("Failed to send telegram message after retries.")
     return False
 
-# ================== گرفتن کندل‌ها ==================
+# ================== دریافت کندل‌ها ==================
 def get_okx_candles(interval="5m", limit=200):
     url = f"https://www.okx.com/api/v5/market/history-candles?instId={SYMBOL}&bar={interval}&limit={limit}"
     try:
@@ -53,19 +51,17 @@ def get_okx_candles(interval="5m", limit=200):
     except:
         return pd.DataFrame()
 
-# ================== ارسال پیام وصل شدن ربات ==================
+# ================== اتصال ربات ==================
 def ensure_bot_connected():
     connected = False
     while not connected:
-        print("⏳ تلاش برای وصل شدن ربات...")
         connected = send_telegram_message("🤖 ربات وصل شد و فعال است!")
         if not connected:
-            time.sleep(10)  # اگر نشد، ۱۰ ثانیه صبر و دوباره تلاش
-    print("✅ ربات آنلاین و پیام وصل شدن ارسال شد!")
+            time.sleep(10)
 
 # ================== بررسی سیگنال‌ها ==================
 def check_and_send_signals():
-    global last_processed_4h_time, last_no_signal_time
+    global last_processed_4h_time, last_no_signal_time, CAPITAL
 
     df_4h = get_okx_candles("4h", 5)
     df_5m = get_okx_candles("5m", 200)
@@ -74,6 +70,7 @@ def check_and_send_signals():
     if df_4h.empty or df_5m.empty or df_1m.empty:
         return
 
+    # مرجع همیشه کندل ۴H بسته شده قبلی
     reference_candle = df_4h.iloc[-2]
     ref_time = reference_candle['time']
 
@@ -86,10 +83,7 @@ def check_and_send_signals():
         high_4h = reference_candle['high']
         low_4h = reference_candle['low']
 
-        start = ref_time + timedelta(hours=4)
-        end = start + timedelta(hours=4)
-
-        df_5m_slice = df_5m[(df_5m['time'] >= start) & (df_5m['time'] < end)]
+        df_5m_slice = df_5m[df_5m['time'] > ref_time]
 
         alert_type = None
         entry_price = None
@@ -99,7 +93,6 @@ def check_and_send_signals():
         # شکست عددی
         for _, row in df_5m_slice.iterrows():
             close = row['close']
-
             if close >= high_4h + DELTA:
                 alert_type = "above"
                 break
@@ -111,13 +104,11 @@ def check_and_send_signals():
         if alert_type:
             for _, row in df_5m_slice.iterrows():
                 close = row['close']
-
                 if alert_type == "above" and close <= high_4h - DELTA:
                     entry_price = close
                     entry_time = row['time']
                     direction = "SHORT"
                     break
-
                 if alert_type == "below" and close >= low_4h + DELTA:
                     entry_price = close
                     entry_time = row['time']
@@ -127,41 +118,44 @@ def check_and_send_signals():
         if entry_price:
             df_1m_slice = df_1m[df_1m['time'] >= entry_time]
 
-            if direction == "LONG":
-                stop = entry_price * (1 - STOP_MOVE_PRICE)
-                target = entry_price * (1 + TARGET_MOVE_PRICE)
-            else:
-                stop = entry_price * (1 + STOP_MOVE_PRICE)
-                target = entry_price * (1 - TARGET_MOVE_PRICE)
-
             for _, row in df_1m_slice.iterrows():
                 high = row['high']
                 low = row['low']
 
+                # محاسبه تارگت و استاپ بر اساس حرکت قیمت × اهرم
                 if direction == "LONG":
-                    if low <= stop:
-                        profit = -STOP_MOVE_PRICE * LEVERAGE
-                        signal_found = True
-                        break
-                    elif high >= target:
+                    price_move_up = (high - entry_price) / entry_price
+                    price_move_down = (low - entry_price) / entry_price
+                    if price_move_up >= TARGET_MOVE_PRICE:
                         profit = TARGET_MOVE_PRICE * LEVERAGE
                         signal_found = True
+                        CAPITAL *= (1 + profit/100)
                         break
-                else:
-                    if high >= stop:
+                    elif price_move_down <= -STOP_MOVE_PRICE:
                         profit = -STOP_MOVE_PRICE * LEVERAGE
                         signal_found = True
+                        CAPITAL *= (1 + profit/100)
                         break
-                    elif low <= target:
+                else:  # SHORT
+                    price_move_down = (entry_price - low) / entry_price
+                    price_move_up = (high - entry_price) / entry_price
+                    if price_move_down >= TARGET_MOVE_PRICE:
                         profit = TARGET_MOVE_PRICE * LEVERAGE
                         signal_found = True
+                        CAPITAL *= (1 + profit/100)
+                        break
+                    elif price_move_up >= STOP_MOVE_PRICE:
+                        profit = -STOP_MOVE_PRICE * LEVERAGE
+                        signal_found = True
+                        CAPITAL *= (1 + profit/100)
                         break
 
             if signal_found:
                 msg = (
                     f"📊 سیگنال {direction}\n"
                     f"ورود: {entry_price:.4f}\n"
-                    f"سود/ضرر نهایی: {profit*100:.2f}%"
+                    f"سود/ضرر نهایی: {profit:.2f}%\n"
+                    f"سرمایه فعلی: {CAPITAL:.2f} دلار"
                 )
                 send_telegram_message(msg)
                 last_no_signal_time = None
@@ -169,17 +163,14 @@ def check_and_send_signals():
 
     # اگر سیگنال نبود هر 30 دقیقه اطلاع بده
     now = datetime.utcnow()
-
     if last_no_signal_time is None:
         last_no_signal_time = now
-
     elif (now - last_no_signal_time).total_seconds() >= 1800:
         send_telegram_message("⏳ در حال حاضر سیگنالی وجود ندارد.")
         last_no_signal_time = now
 
 # ================== شروع ربات ==================
-ensure_bot_connected()  # اول پیام وصل شدن
-
+ensure_bot_connected()
 print("🤖 ربات شروع شد و وارد حلقه اصلی شد")
 
 while True:
