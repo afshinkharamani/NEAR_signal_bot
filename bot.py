@@ -4,8 +4,8 @@ import traceback
 from datetime import datetime, timedelta
 import pandas as pd
 
-BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
-CHAT_ID = "7107618784"
+BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"  # جایگزین توکن واقعی
+CHAT_ID = "7107618784"  # جایگزین چت واقعی
 
 LEVERAGE = 20
 TARGET_MOVE_PRICE = 0.01
@@ -16,14 +16,25 @@ SYMBOL = "NEAR-USDT"
 last_processed_4h_time = None
 last_no_signal_time = None
 
-def send_telegram_message(text):
+# ================== ارسال پیام تلگرام ==================
+def send_telegram_message(text, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except:
-        print("Telegram send error")
+    for attempt in range(retries):
+        try:
+            r = requests.post(url, data=payload, timeout=10)
+            if r.status_code == 200:
+                print(f"Telegram message sent: {text}")
+                return True
+            else:
+                print(f"Telegram failed, status {r.status_code}, attempt {attempt+1}")
+        except Exception as e:
+            print(f"Telegram send error attempt {attempt+1}: {e}")
+        time.sleep(5)
+    print("Failed to send telegram message after retries.")
+    return False
 
+# ================== گرفتن کندل‌ها ==================
 def get_okx_candles(interval="5m", limit=200):
     url = f"https://www.okx.com/api/v5/market/history-candles?instId={SYMBOL}&bar={interval}&limit={limit}"
     try:
@@ -42,6 +53,17 @@ def get_okx_candles(interval="5m", limit=200):
     except:
         return pd.DataFrame()
 
+# ================== ارسال پیام وصل شدن ربات ==================
+def ensure_bot_connected():
+    connected = False
+    while not connected:
+        print("⏳ تلاش برای وصل شدن ربات...")
+        connected = send_telegram_message("🤖 ربات وصل شد و فعال است!")
+        if not connected:
+            time.sleep(10)  # اگر نشد، ۱۰ ثانیه صبر و دوباره تلاش
+    print("✅ ربات آنلاین و پیام وصل شدن ارسال شد!")
+
+# ================== بررسی سیگنال‌ها ==================
 def check_and_send_signals():
     global last_processed_4h_time, last_no_signal_time
 
@@ -55,7 +77,6 @@ def check_and_send_signals():
     reference_candle = df_4h.iloc[-2]
     ref_time = reference_candle['time']
 
-    # جلوگیری از تکرار بررسی همان کندل
     if last_processed_4h_time == ref_time:
         signal_found = False
     else:
@@ -146,7 +167,7 @@ def check_and_send_signals():
                 last_no_signal_time = None
                 return
 
-    # ===== اگر سیگنال نبود هر 30 دقیقه اطلاع بده =====
+    # اگر سیگنال نبود هر 30 دقیقه اطلاع بده
     now = datetime.utcnow()
 
     if last_no_signal_time is None:
@@ -156,8 +177,10 @@ def check_and_send_signals():
         send_telegram_message("⏳ در حال حاضر سیگنالی وجود ندارد.")
         last_no_signal_time = now
 
+# ================== شروع ربات ==================
+ensure_bot_connected()  # اول پیام وصل شدن
 
-print("🤖 ربات شروع شد")
+print("🤖 ربات شروع شد و وارد حلقه اصلی شد")
 
 while True:
     try:
