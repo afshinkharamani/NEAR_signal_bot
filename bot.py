@@ -17,10 +17,8 @@ DELTA = 0.001
 
 last_processed_4h_time = None
 last_alert_time = None
-last_entry_time = None
-
-# وضعیت معامله جاری
 current_trade = None  # {'entry_price', 'direction', 'stop', 'target', 'entry_time'}
+first_entry_check_done = False
 
 # ===========================
 # ارسال پیام تلگرام
@@ -72,9 +70,8 @@ def get_toobit_candles(symbol, interval="5m", limit=200):
 # بررسی معاملات و ورود
 # ===========================
 def check_and_send_signals():
-    global last_processed_4h_time, last_alert_time, last_entry_time, current_trade
+    global last_processed_4h_time, last_alert_time, current_trade, first_entry_check_done
 
-    # دریافت کندل‌ها
     df_4h = get_toobit_candles(SYMBOL, "4h", 10)
     df_5m = get_toobit_candles(SYMBOL, "5m", 250)
     df_1m = get_toobit_candles(SYMBOL, "1m", 500)
@@ -95,7 +92,7 @@ def check_and_send_signals():
     if last_processed_4h_time != reference_candle["time"]:
         last_processed_4h_time = reference_candle["time"]
         last_alert_time = None
-        last_entry_time = None
+        first_entry_check_done = False
         current_trade = None
         print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {reference_candle['time']}")
 
@@ -104,30 +101,33 @@ def check_and_send_signals():
     alert_given = False
     entry_done = current_trade is not None
 
-    for _, row in df_5m_since.iterrows():
+    for i, row in df_5m_since.iterrows():
         t = row["time"]
         close = row["close"]
 
-        # نیم ساعت پایانی
         if t >= half_hour_before_end:
             if not last_alert_time:
                 send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی کندل ۴H جاری!")
                 last_alert_time = t
-            break  # ورود در نیم ساعت پایانی انجام نمی‌شود
+            break
 
-        # هشدار بعد از بسته شدن کندل ۵ دقیقه‌ای
+        # هشدار فقط بر اساس کلوز کندل 5 دقیقه‌ای
         if not alert_given:
             if close > high_4h:
-                send_telegram_message(f"⚠️ هشدار: Close کندل ۵ دقیقه‌ای بالای سقف کندل ۴H قبلی!")
+                send_telegram_message(f"⚠️ هشدار: شکست سقف کندل ۴H قبلی!")
                 last_alert_time = t
                 alert_given = "SHORT"
             elif close < low_4h:
-                send_telegram_message(f"⚠️ هشدار: Close کندل ۵ دقیقه‌ای پایین‌تر از کف کندل ۴H قبلی!")
+                send_telegram_message(f"⚠️ هشدار: شکست کف کندل ۴H قبلی!")
                 last_alert_time = t
                 alert_given = "LONG"
 
-        # ورود بعد از برگشت کندل ۵ دقیقه‌ای بعد از هشدار
-        if alert_given and not entry_done and last_alert_time and t > last_alert_time:
+        # بررسی ورود از کلوز اولین کندل بعد از هشدار
+        if alert_given and not entry_done and last_alert_time and not first_entry_check_done:
+            first_entry_check_done = True  # فقط اولین کندل بعد از هشدار بررسی می‌شود
+            continue  # کندل بعدی بررسی ورود
+
+        if alert_given and not entry_done and first_entry_check_done:
             if alert_given == "SHORT" and close < high_4h:
                 entry_price = close
                 direction = "SHORT"
