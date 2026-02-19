@@ -11,8 +11,8 @@ BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
 CHAT_ID = "7107618784"
 SYMBOL = "NEAR-SWAP-USDT"
 LEVERAGE = 20
-TARGET_MOVE_PRICE = 0.01
-STOP_MOVE_PRICE = 0.025
+TARGET_MOVE_PRICE = 0.01   # 1% در جهت معامله
+STOP_MOVE_PRICE = 0.025    # 2.5% در جهت عکس معامله
 DELTA = 0.001
 
 last_processed_4h_time = None
@@ -131,8 +131,10 @@ def check_and_send_signals():
             if alert_given == "SHORT" and close < high_4h:
                 entry_price = close
                 direction = "SHORT"
-                stop = entry_price * (1 + STOP_MOVE_PRICE)
-                target = entry_price * (1 - TARGET_MOVE_PRICE)
+                # ===== اصلاح تارگت و استاپ =====
+                target = entry_price * (1 - TARGET_MOVE_PRICE)  # 1% در جهت معامله
+                stop = entry_price * (1 + STOP_MOVE_PRICE)      # 2.5% در جهت مخالف
+                # ============================
                 entry_time = t
                 current_trade = {
                     "entry_price": entry_price,
@@ -145,8 +147,10 @@ def check_and_send_signals():
             elif alert_given == "LONG" and close > low_4h:
                 entry_price = close
                 direction = "LONG"
-                stop = entry_price * (1 - STOP_MOVE_PRICE)
-                target = entry_price * (1 + TARGET_MOVE_PRICE)
+                # ===== اصلاح تارگت و استاپ =====
+                target = entry_price * (1 + TARGET_MOVE_PRICE)  # 1% در جهت معامله
+                stop = entry_price * (1 - STOP_MOVE_PRICE)      # 2.5% در جهت مخالف
+                # ============================
                 entry_time = t
                 current_trade = {
                     "entry_price": entry_price,
