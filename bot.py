@@ -19,6 +19,9 @@ last_processed_4h_time = None
 last_alert_time = None
 last_entry_time = None
 
+# وضعیت معامله جاری
+current_trade = None  # {'entry_price', 'direction', 'stop', 'target', 'entry_time'}
+
 # ===========================
 # ارسال پیام تلگرام
 # ===========================
@@ -39,7 +42,7 @@ def send_telegram_message(text, retries=3):
     return False
 
 # ===========================
-# دریافت کندل‌های فیوچرز Toobit
+# دریافت کندل‌های Toobit
 # ===========================
 def get_toobit_candles(symbol, interval="5m", limit=200):
     url = "https://api.toobit.com/quote/v1/klines"
@@ -66,102 +69,135 @@ def get_toobit_candles(symbol, interval="5m", limit=200):
         return pd.DataFrame()
 
 # ===========================
-# بررسی سیگنال‌ها
+# بررسی معاملات و ورود
 # ===========================
 def check_and_send_signals():
-    global last_processed_4h_time, last_alert_time, last_entry_time
+    global last_processed_4h_time, last_alert_time, last_entry_time, current_trade
 
+    # کندل‌ها
     df_4h = get_toobit_candles(SYMBOL, "4h", 10)
     df_5m = get_toobit_candles(SYMBOL, "5m", 250)
+    df_1m = get_toobit_candles(SYMBOL, "1m", 500)  # برای پیگیری معامله
 
-    if df_4h.empty or df_5m.empty:
+    if df_4h.empty or df_5m.empty or df_1m.empty:
         print(f"[{datetime.now(timezone.utc)}] دریافت داده‌ها ناموفق بود")
         return
 
-    # آخرین کندل ۴H بسته شده (برای مرجع هشدار ورود)
-    reference_candle = df_4h.iloc[-2]
-    ref_time = reference_candle["time"]
+    reference_candle = df_4h.iloc[-2]  # کندل ۴H قبلی
     high_4h = reference_candle["high"]
     low_4h = reference_candle["low"]
 
-    # کندل ۴H جاری (در حال شکل گرفتن)
     current_4h_candle = df_4h.iloc[-1]
     start_4h = current_4h_candle["time"]
     end_4h_candle = start_4h + timedelta(hours=4)
     half_hour_before_end = end_4h_candle - timedelta(minutes=30)
 
-    # شروع چرخه کندل ۴H بسته شده جدید
-    is_new_4h = last_processed_4h_time != ref_time
-    if is_new_4h:
-        last_processed_4h_time = ref_time
+    if last_processed_4h_time != reference_candle["time"]:
+        last_processed_4h_time = reference_candle["time"]
         last_alert_time = None
         last_entry_time = None
-        print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {ref_time}")
+        current_trade = None
+        print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {reference_candle['time']}")
 
-    # چاپ زمان‌ها برای بررسی دقیق
-    print(f"[DEBUG] Current 4H candle start: {start_4h}, end: {end_4h_candle}, half hour before end: {half_hour_before_end}")
-
-    # کندل‌های ۵ دقیقه‌ای از زمان کندل ۴H جاری
     df_5m_since = df_5m[df_5m["time"] >= start_4h]
 
     alert_given = False
-    entry_done = last_entry_time is not None
+    entry_done = current_trade is not None
 
     for _, row in df_5m_since.iterrows():
         t = row["time"]
         close = row["close"]
 
-        # اگر تا پایان کندل ۴ ساعته، ورود داده شده است، هیچ سیگنالی داده نمی‌شود
-        if entry_done and t >= last_entry_time:
-            break
+        # نیم ساعت پایانی
+        if t >= half_hour_before_end:
+            if not last_alert_time:
+                send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی کندل ۴H جاری!")
+                last_alert_time = t
+            break  # ورود در نیم ساعت پایانی انجام نمی‌شود
 
-        # هشدار فقط بعد از بسته شدن کندل ۵ دقیقه‌ای
-        if not last_alert_time:
-            if t < half_hour_before_end:  # قبل از نیم ساعت پایانی واقعی
-                if close >= high_4h + DELTA:
-                    send_telegram_message(f"⚠️ هشدار بالای کندل ۴H قبلی!")
-                    last_alert_time = t
-                    alert_given = True
-                elif close <= low_4h - DELTA:
-                    send_telegram_message(f"⚠️ هشدار پایین کندل ۴H قبلی!")
-                    last_alert_time = t
-                    alert_given = True
-            else:  # نیم ساعت آخر کندل ۴H جاری
-                if close >= high_4h + DELTA:
-                    send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی بالای کندل ۴H!")
-                    last_alert_time = t
-                    alert_given = True
-                elif close <= low_4h - DELTA:
-                    send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی پایین کندل ۴H!")
-                    last_alert_time = t
-                    alert_given = True
+        # هشدار شکست
+        if not alert_given:
+            if close > high_4h:
+                send_telegram_message(f"⚠️ هشدار: شکست سقف کندل ۴H قبلی!")
+                last_alert_time = t
+                alert_given = "SHORT"
+            elif close < low_4h:
+                send_telegram_message(f"⚠️ هشدار: شکست کف کندل ۴H قبلی!")
+                last_alert_time = t
+                alert_given = "LONG"
 
-        # ورود تنها اگر هشدار قبلی داده شده و هنوز ورود انجام نشده
-        if alert_given and not entry_done and t > last_alert_time and t < half_hour_before_end:
-            if last_alert_time and last_alert_time < t:
-                if close > high_4h and close <= high_4h + DELTA:  # تایید ورود SHORT
-                    entry_price = close
-                    entry_time = t
-                    direction = "SHORT"
-                    entry_done = True
-                elif close < low_4h and close >= low_4h - DELTA:  # تایید ورود LONG
-                    entry_price = close
-                    entry_time = t
-                    direction = "LONG"
-                    entry_done = True
+        # ورود بعد از برگشت کندل ۵ دقیقه‌ای
+        if alert_given and not entry_done and t > last_alert_time:
+            if alert_given == "SHORT" and close < high_4h:
+                entry_price = close
+                direction = "SHORT"
+                stop = entry_price * (1 + STOP_MOVE_PRICE)
+                target = entry_price * (1 - TARGET_MOVE_PRICE)
+                entry_time = t
+                current_trade = {
+                    "entry_price": entry_price,
+                    "direction": direction,
+                    "stop": stop,
+                    "target": target,
+                    "entry_time": entry_time
+                }
+                entry_done = True
+            elif alert_given == "LONG" and close > low_4h:
+                entry_price = close
+                direction = "LONG"
+                stop = entry_price * (1 - STOP_MOVE_PRICE)
+                target = entry_price * (1 + TARGET_MOVE_PRICE)
+                entry_time = t
+                current_trade = {
+                    "entry_price": entry_price,
+                    "direction": direction,
+                    "stop": stop,
+                    "target": target,
+                    "entry_time": entry_time
+                }
+                entry_done = True
 
-                if entry_done:
-                    last_entry_time = entry_time
-                    if direction == "LONG":
-                        stop = entry_price * (1 - STOP_MOVE_PRICE)
-                        target = entry_price * (1 + TARGET_MOVE_PRICE)
-                    else:
-                        stop = entry_price * (1 + STOP_MOVE_PRICE)
-                        target = entry_price * (1 - TARGET_MOVE_PRICE)
+            if entry_done:
+                send_telegram_message(
+                    f"📊 سیگنال {direction}\nورود: {entry_price:.4f}\nحد ضرر: {stop:.4f}\nهدف: {target:.4f}\nزمان ورود: {entry_time}"
+                )
+                print(f"[DEBUG] Entry at {entry_price} | Direction: {direction} | Time: {entry_time}")
 
-                    send_telegram_message(
-                        f"📊 سیگنال {direction}\nورود: {entry_price:.4f}\nحد ضرر: {stop:.4f}\nهدف: {target:.4f}"
-                    )
+    # ===========================
+    # بررسی معامله جاری با کندل‌های ۱ دقیقه‌ای
+    # ===========================
+    if current_trade:
+        trade = current_trade
+        for _, row in df_1m[df_1m["time"] >= trade["entry_time"]].iterrows():
+            price = row["close"]
+            t = row["time"]
+            exit_trade = False
+            result = None
+
+            if trade["direction"] == "LONG":
+                if price >= trade["target"]:
+                    exit_trade = True
+                    result = "WIN"
+                elif price <= trade["stop"]:
+                    exit_trade = True
+                    result = "LOSS"
+            else:  # SHORT
+                if price <= trade["target"]:
+                    exit_trade = True
+                    result = "WIN"
+                elif price >= trade["stop"]:
+                    exit_trade = True
+                    result = "LOSS"
+
+            if exit_trade:
+                duration = (t - trade["entry_time"]).total_seconds() / 60  # دقیقه
+                send_telegram_message(
+                    f"🏁 معامله بسته شد!\nجهت: {trade['direction']}\nورود: {trade['entry_price']:.4f}\n"
+                    f"خروج: {price:.4f}\nنتیجه: {result}\nمدت زمان معامله: {duration:.1f} دقیقه\nزمان خروج: {t}"
+                )
+                print(f"[DEBUG] Trade {trade['direction']} | Entry: {trade['entry_price']} | Exit: {price} | Result: {result} | Duration: {duration:.1f} min")
+                current_trade = None
+                break
 
 # ===========================
 # شروع ربات
