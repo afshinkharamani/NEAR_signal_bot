@@ -78,12 +78,19 @@ def check_and_send_signals():
         print(f"[{datetime.now(timezone.utc)}] دریافت داده‌ها ناموفق بود")
         return
 
+    # آخرین کندل ۴H بسته شده (برای مرجع هشدار ورود)
     reference_candle = df_4h.iloc[-2]
     ref_time = reference_candle["time"]
     high_4h = reference_candle["high"]
     low_4h = reference_candle["low"]
 
-    # شروع چرخه کندل ۴ ساعته جدید
+    # کندل ۴H جاری (در حال شکل گرفتن)
+    current_4h_candle = df_4h.iloc[-1]
+    start_4h = current_4h_candle["time"]
+    end_4h_candle = start_4h + timedelta(hours=4)
+    half_hour_before_end = end_4h_candle - timedelta(minutes=30)
+
+    # شروع چرخه کندل ۴H بسته شده جدید
     is_new_4h = last_processed_4h_time != ref_time
     if is_new_4h:
         last_processed_4h_time = ref_time
@@ -91,15 +98,11 @@ def check_and_send_signals():
         last_entry_time = None
         print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {ref_time}")
 
-    # پایان کندل ۴H و نیم ساعت قبلش
-    end_4h_candle = reference_candle["time"] + timedelta(hours=4)
-    half_hour_before_end = end_4h_candle - timedelta(minutes=30)
-
     # چاپ زمان‌ها برای بررسی دقیق
-    print(f"[DEBUG] Reference 4H candle start: {ref_time}, end: {end_4h_candle}, half hour before end: {half_hour_before_end}")
+    print(f"[DEBUG] Current 4H candle start: {start_4h}, end: {end_4h_candle}, half hour before end: {half_hour_before_end}")
 
     # کندل‌های ۵ دقیقه‌ای از زمان کندل ۴H جاری
-    df_5m_since = df_5m[df_5m["time"] >= ref_time]
+    df_5m_since = df_5m[df_5m["time"] >= start_4h]
 
     alert_given = False
     entry_done = last_entry_time is not None
@@ -123,7 +126,7 @@ def check_and_send_signals():
                     send_telegram_message(f"⚠️ هشدار پایین کندل ۴H قبلی!")
                     last_alert_time = t
                     alert_given = True
-            else:  # نیم ساعت آخر کندل ۴H
+            else:  # نیم ساعت آخر کندل ۴H جاری
                 if close >= high_4h + DELTA:
                     send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی بالای کندل ۴H!")
                     last_alert_time = t
