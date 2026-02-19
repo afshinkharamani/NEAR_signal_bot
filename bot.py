@@ -22,6 +22,7 @@ last_report_time = None
 
 # وضعیت معامله جاری
 current_trade = None  # {'entry_price', 'direction', 'stop', 'target', 'entry_time'}
+alert_given = None  # ⚡ هشدار High/Low برای جلوگیری از ارسال مکرر
 
 # ===========================
 # ارسال پیام تلگرام
@@ -70,10 +71,11 @@ def get_toobit_candles(symbol, interval="5m", limit=200):
         return pd.DataFrame()
 
 # ===========================
-# بررسی معاملات و ورود
+# بررسی معاملات و ورود (نسخه اصلاح شده)
 # ===========================
 def check_and_send_signals():
     global last_processed_4h_time, last_alert_time, last_entry_time, current_trade, last_report_time
+    global alert_given
 
     df_4h = get_toobit_candles(SYMBOL, "4h", 10)
     df_5m = get_toobit_candles(SYMBOL, "5m", 500)
@@ -92,17 +94,18 @@ def check_and_send_signals():
     end_4h_candle = start_4h + timedelta(hours=4)
     half_hour_before_end = end_4h_candle - timedelta(minutes=30)
 
+    # ⚡ شروع کندل جدید ۴H → ریست هشدار
     if last_processed_4h_time != reference_candle["time"]:
         last_processed_4h_time = reference_candle["time"]
         last_alert_time = None
         last_entry_time = None
         current_trade = None
         last_report_time = None
+        alert_given = None
         print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {reference_candle['time']}")
 
     df_5m_since = df_5m[df_5m["time"] >= start_4h]
 
-    alert_given = False
     entry_done = current_trade is not None
 
     for i, row in df_5m_since.iterrows():
@@ -116,8 +119,8 @@ def check_and_send_signals():
                 last_alert_time = t
             break
 
-        # هشدار فقط اگر معامله فعالی وجود ندارد
-        if not alert_given and current_trade is None:
+        # ⚡ اصلاح هشدار High/Low کندل ۴H → فقط یکبار قبل از ورود معامله
+        if alert_given is None and current_trade is None:
             if close > high_4h:
                 send_telegram_message(f"⚠️ هشدار: کندل پنج دقیقه بسته بالای سقف کندل ۴H قبلی!")
                 last_alert_time = t
@@ -127,7 +130,7 @@ def check_and_send_signals():
                 last_alert_time = t
                 alert_given = "LONG"
 
-        # ورود بعد از کلوز کندل ۵ دقیقه‌ای که بعد از هشدار بسته شد
+        # ورود بعد از کلوز کندل ۵ دقیقه‌ای بعد از هشدار (بدون تغییر)
         if alert_given and not entry_done and last_alert_time is not None and t > last_alert_time:
             if alert_given == "SHORT" and close < high_4h:
                 entry_price = close
@@ -163,53 +166,6 @@ def check_and_send_signals():
                     f"📊 سیگنال {direction}\nورود: {entry_price:.4f}\nحد ضرر: {stop:.4f}\nهدف: {target:.4f}\nزمان ورود: {entry_time}"
                 )
                 print(f"[DEBUG] Entry at {entry_price} | Direction: {direction} | Time: {entry_time}")
-
-    # ===========================
-    # بررسی معامله جاری با کندل‌های ۱ دقیقه‌ای
-    # ===========================
-    if current_trade:
-        trade = current_trade
-        for _, row in df_1m[df_1m["time"] >= trade["entry_time"]].iterrows():
-            price = row["close"]
-            t = row["time"]
-            exit_trade = False
-            result = None
-
-            if trade["direction"] == "LONG":
-                if price >= trade["target"]:
-                    exit_trade = True
-                    result = "WIN"
-                elif price <= trade["stop"]:
-                    exit_trade = True
-                    result = "LOSS"
-            else:  # SHORT
-                if price <= trade["target"]:
-                    exit_trade = True
-                    result = "WIN"
-                elif price >= trade["stop"]:
-                    exit_trade = True
-                    result = "LOSS"
-
-            # گزارش وضعیت هر ۵ دقیقه
-            if not exit_trade and (last_report_time is None or (t - last_report_time).total_seconds() >= 300):
-                profit_percent = (price - trade["entry_price"]) / trade["entry_price"] * LEVERAGE * 100
-                if trade["direction"] == "SHORT":
-                    profit_percent = -profit_percent
-                send_telegram_message(
-                    f"📈 گزارش معامله: {trade['direction']}\nقیمت جاری: {price:.4f}\nسود/ضرر تقریبی: {profit_percent:.2f}%"
-                )
-                last_report_time = t
-
-            if exit_trade:
-                duration = (t - trade["entry_time"]).total_seconds() / 60
-                send_telegram_message(
-                    f"🏁 معامله بسته شد!\nجهت: {trade['direction']}\nورود: {trade['entry_price']:.4f}\n"
-                    f"خروج: {price:.4f}\nنتیجه: {result}\nمدت زمان معامله: {duration:.1f} دقیقه\nزمان خروج: {t}"
-                )
-                print(f"[DEBUG] Trade {trade['direction']} | Entry: {trade['entry_price']} | Exit: {price} | Result: {result} | Duration: {duration:.1f} min")
-                current_trade = None
-                last_report_time = None
-                break
 
 # ===========================
 # شروع ربات
