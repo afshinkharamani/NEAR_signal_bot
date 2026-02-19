@@ -1,7 +1,7 @@
 import requests
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 
 # ===========================
@@ -9,16 +9,15 @@ import pandas as pd
 # ===========================
 BOT_TOKEN = "8448021675:AAE0Z4jRdHZKLVXxIBEfpCb9lUbkkxmlW-k"
 CHAT_ID = "7107618784"
-
-SYMBOL = "NEAR-USDT"
+SYMBOL = "NEAR-SWAP-USDT"
 LEVERAGE = 20
-TARGET_MOVE_PRICE = 0.01   # 1٪ حرکت قیمت × اهرم = 20٪ سود
-STOP_MOVE_PRICE = 0.025    # 2.5٪ حرکت ضد جهت = 50٪ ضرر
-DELTA = 0.001              # حاشیه عددی برای شکست
+TARGET_MOVE_PRICE = 0.01
+STOP_MOVE_PRICE = 0.025
+DELTA = 0.001
 
 last_processed_4h_time = None
 last_alert_time = None
-in_trade = False
+last_entry_time = None
 
 # ===========================
 # ارسال پیام تلگرام
@@ -26,144 +25,149 @@ in_trade = False
 def send_telegram_message(text, retries=3):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
+    now = datetime.now(timezone.utc)
     for attempt in range(retries):
         try:
             r = requests.post(url, data=payload, timeout=10)
             if r.status_code == 200:
-                print(f"[{datetime.now(timezone.utc)}] Telegram: {text}")
+                print(f"[{now}] Telegram: {text}")
                 return True
         except Exception as e:
-            print(f"[{datetime.now(timezone.utc)}] Telegram send error {attempt+1}: {e}")
+            print(f"[{now}] Telegram send error {attempt+1}: {e}")
         time.sleep(5)
-    print(f"[{datetime.now(timezone.utc)}] Telegram failed after retries")
+    print(f"[{now}] Telegram failed after retries")
     return False
 
 # ===========================
-# دریافت کندل‌ها از Toobit (فیوچرز)
+# دریافت کندل‌های فیوچرز Toobit
 # ===========================
-def get_toobit_candles(interval="5m", limit=200):
-    # این URL باید مطابق API رسمی Toobit اصلاح شود
-    url = f"https://api.toobit.com/futures/market/history-candles?symbol={SYMBOL}&interval={interval}&limit={limit}"
+def get_toobit_candles(symbol, interval="5m", limit=200):
+    url = "https://api.toobit.com/quote/v1/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            print(f"[{datetime.now(timezone.utc)}] Toobit HTTP error: {r.status_code}")
+            return pd.DataFrame()
         data = r.json()
-        if "data" in data:
-            df = pd.DataFrame(data["data"], columns=[
-                "time","open","high","low","close","volume"
-            ])
-            df['time'] = pd.to_datetime(df['time'], unit='ms', errors='coerce', utc=True)
-            df = df.dropna(subset=['time'])
-            for col in ['open','high','low','close','volume']:
-                df[col] = df[col].astype(float)
-            return df.sort_values("time").reset_index(drop=True)
-        return pd.DataFrame()
-    except:
-        print(f"[{datetime.now(timezone.utc)}] دریافت داده‌ها ناموفق بود")
+        if not isinstance(data, list):
+            print(f"[{datetime.now(timezone.utc)}] Unexpected Toobit response")
+            return pd.DataFrame()
+        df = pd.DataFrame(data, columns=[
+            "open_time","open","high","low","close","volume",
+            "close_time","quote_volume","count","taker_base","taker_quote"
+        ])
+        df["time"] = pd.to_datetime(df["open_time"], unit='ms', utc=True)
+        for col in ["open","high","low","close"]:
+            df[col] = df[col].astype(float)
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        print(f"[{datetime.now(timezone.utc)}] Exception in get_toobit_candles: {e}")
         return pd.DataFrame()
 
 # ===========================
-# بررسی هشدار و ورود
+# بررسی سیگنال‌ها
 # ===========================
 def check_and_send_signals():
-    global last_processed_4h_time, last_alert_time, in_trade
+    global last_processed_4h_time, last_alert_time, last_entry_time
 
-    df_4h = get_toobit_candles("4h", 5)
-    df_5m = get_toobit_candles("5m", 200)
+    df_4h = get_toobit_candles(SYMBOL, "4h", 10)
+    df_5m = get_toobit_candles(SYMBOL, "5m", 250)
 
     if df_4h.empty or df_5m.empty:
+        print(f"[{datetime.now(timezone.utc)}] دریافت داده‌ها ناموفق بود")
         return
 
-    # کندل ۴H بسته شده قبلی
     reference_candle = df_4h.iloc[-2]
-    ref_time = reference_candle['time']
+    ref_time = reference_candle["time"]
+    high_4h = reference_candle["high"]
+    low_4h = reference_candle["low"]
 
-    if last_processed_4h_time == ref_time:
-        return  # جلوگیری از پردازش دوباره
-    last_processed_4h_time = ref_time
-    in_trade = False
-    last_alert_time = None
+    # شروع چرخه کندل ۴ ساعته جدید
+    is_new_4h = last_processed_4h_time != ref_time
+    if is_new_4h:
+        last_processed_4h_time = ref_time
+        last_alert_time = None
+        last_entry_time = None
+        print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {ref_time}")
 
-    high_4h = reference_candle['high']
-    low_4h = reference_candle['low']
+    # کندل‌های ۵ دقیقه‌ای از زمان کندل ۴H جاری
+    df_5m_since = df_5m[df_5m["time"] >= ref_time]
 
-    # بازه کندل ۴H فعلی
-    start_4h_current = ref_time + timedelta(hours=4)
-    end_4h_current = start_4h_current + timedelta(hours=4)
+    now = datetime.now(timezone.utc)
+    end_4h_candle = reference_candle["time"] + timedelta(hours=4)
+    half_hour_before_end = end_4h_candle - timedelta(minutes=30)
+    
+    alert_given = False
+    entry_done = last_entry_time is not None
 
-    # کندل‌های ۵ دقیقه‌ای فعلی
-    df_5m_slice = df_5m[(df_5m['time'] >= start_4h_current) & (df_5m['time'] < end_4h_current)]
+    for _, row in df_5m_since.iterrows():
+        t = row["time"]
+        close = row["close"]
 
-    alert_type = None
-    entry_price = None
-    direction = None
+        # اگر تا پایان کندل ۴ ساعته، ورود داده شده است، هیچ سیگنالی داده نمی‌شود
+        if entry_done and t >= last_entry_time:
+            break
 
-    # -------------------------
-    # بررسی هشدار (بر اساس کلوز ۵m)
-    # -------------------------
-    for _, row in df_5m_slice.iterrows():
-        close = row['close']
-        current_time = row['time']
+        # هشدار فقط بعد از بسته شدن کندل ۵ دقیقه‌ای
+        if not last_alert_time:
+            if t < half_hour_before_end:  # قبل از نیم ساعت پایانی
+                if close >= high_4h + DELTA:
+                    send_telegram_message(f"⚠️ هشدار بالای کندل ۴H قبلی!")
+                    last_alert_time = t
+                    alert_given = True
+                elif close <= low_4h - DELTA:
+                    send_telegram_message(f"⚠️ هشدار پایین کندل ۴H قبلی!")
+                    last_alert_time = t
+                    alert_given = True
+            else:  # نیم ساعت آخر کندل ۴H، فقط هشدار داده می‌شود، ورود نمی‌شود
+                if close >= high_4h + DELTA:
+                    send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی بالای کندل ۴H!")
+                    last_alert_time = t
+                    alert_given = True
+                elif close <= low_4h - DELTA:
+                    send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی پایین کندل ۴H!")
+                    last_alert_time = t
+                    alert_given = True
 
-        # نیم ساعت آخر ۴H: فقط هشدار بدون ورود
-        last_30m = (end_4h_current - current_time).total_seconds() <= 30*60
+        # ورود تنها اگر هشدار قبلی داده شده و هنوز ورود انجام نشده
+        if alert_given and not entry_done and t > last_alert_time and t < half_hour_before_end:
+            if last_alert_time and last_alert_time < t:
+                if close > high_4h and close <= high_4h + DELTA:  # تایید ورود SHORT
+                    entry_price = close
+                    entry_time = t
+                    direction = "SHORT"
+                    entry_done = True
+                elif close < low_4h and close >= low_4h - DELTA:  # تایید ورود LONG
+                    entry_price = close
+                    entry_time = t
+                    direction = "LONG"
+                    entry_done = True
 
-        if last_alert_time is None:  # هنوز هشداری صادر نشده
-            if close >= high_4h + DELTA:
-                alert_type = "ABOVE"
-            elif close <= low_4h - DELTA:
-                alert_type = "BELOW"
+                if entry_done:
+                    last_entry_time = entry_time
+                    if direction == "LONG":
+                        stop = entry_price * (1 - STOP_MOVE_PRICE)
+                        target = entry_price * (1 + TARGET_MOVE_PRICE)
+                    else:
+                        stop = entry_price * (1 + STOP_MOVE_PRICE)
+                        target = entry_price * (1 - TARGET_MOVE_PRICE)
 
-            if alert_type:
-                if last_30m:
-                    send_telegram_message(f"⚠️ هشدار {alert_type} کندل ۴H قبلی (۳۰ دقیقه پایانی، ورود فعال نیست)")
-                else:
-                    send_telegram_message(f"⚠️ هشدار {alert_type} کندل ۴H قبلی!")
-                last_alert_time = current_time
-                break  # فقط یک هشدار برای هر کندل ۴H صادر شود
-
-    # -------------------------
-    # بررسی ورود پس از هشدار
-    # -------------------------
-    if last_alert_time and not in_trade:
-        for _, row in df_5m_slice[df_5m_slice['time'] >= last_alert_time].iterrows():
-            close = row['close']
-            current_time = row['time']
-
-            if alert_type == "ABOVE" and close <= high_4h - DELTA and (end_4h_current - current_time).total_seconds() > 30*60:
-                direction = "SHORT"
-                entry_price = close
-                break
-            elif alert_type == "BELOW" and close >= low_4h + DELTA and (end_4h_current - current_time).total_seconds() > 30*60:
-                direction = "LONG"
-                entry_price = close
-                break
-
-    # -------------------------
-    # تعیین حد ضرر و تارگت
-    # -------------------------
-    if entry_price:
-        in_trade = True
-        if direction == "LONG":
-            stop = entry_price * (1 - STOP_MOVE_PRICE)
-            target = entry_price * (1 + TARGET_MOVE_PRICE)
-        else:
-            stop = entry_price * (1 + STOP_MOVE_PRICE)
-            target = entry_price * (1 - TARGET_MOVE_PRICE)
-
-        send_telegram_message(
-            f"📊 سیگنال {direction}\nورود: {entry_price:.4f}\nحد ضرر: {stop:.4f}\nهدف: {target:.4f}"
-        )
+                    send_telegram_message(
+                        f"📊 سیگنال {direction}\nورود: {entry_price:.4f}\nحد ضرر: {stop:.4f}\nهدف: {target:.4f}"
+                    )
 
 # ===========================
-# حلقه اصلی ربات
+# شروع ربات
 # ===========================
-send_telegram_message(f"🤖 ربات Toobit Futures NEAR وصل شد و فعال است!")
-print("🤖 ربات شروع شد و وارد حلقه اصلی شد")
+send_telegram_message("🤖 ربات Toobit Futures NEAR وصل شد و فعال است!")
+print("🤖 ربات Toobit Futures NEAR شروع شد و وارد حلقه اصلی شد")
 
 while True:
     try:
         check_and_send_signals()
         time.sleep(60)
-    except Exception:
+    except Exception as e:
+        print(f"[{datetime.now(timezone.utc)}] Exception in main loop: {e}")
         traceback.print_exc()
         time.sleep(30)
