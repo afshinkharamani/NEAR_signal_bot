@@ -91,13 +91,16 @@ def check_and_send_signals():
         last_entry_time = None
         print(f"[{datetime.now(timezone.utc)}] کندل ۴H جدید: {ref_time}")
 
+    # پایان کندل ۴H و نیم ساعت قبلش
+    end_4h_candle = reference_candle["time"] + timedelta(hours=4)
+    half_hour_before_end = end_4h_candle - timedelta(minutes=30)
+
+    # چاپ زمان‌ها برای بررسی دقیق
+    print(f"[DEBUG] Reference 4H candle start: {ref_time}, end: {end_4h_candle}, half hour before end: {half_hour_before_end}")
+
     # کندل‌های ۵ دقیقه‌ای از زمان کندل ۴H جاری
     df_5m_since = df_5m[df_5m["time"] >= ref_time]
 
-    now = datetime.now(timezone.utc)
-    end_4h_candle = reference_candle["time"] + timedelta(hours=4)
-    half_hour_before_end = end_4h_candle - timedelta(minutes=30)
-    
     alert_given = False
     entry_done = last_entry_time is not None
 
@@ -111,7 +114,7 @@ def check_and_send_signals():
 
         # هشدار فقط بعد از بسته شدن کندل ۵ دقیقه‌ای
         if not last_alert_time:
-            if t < half_hour_before_end:  # قبل از نیم ساعت پایانی
+            if t < half_hour_before_end:  # قبل از نیم ساعت پایانی واقعی
                 if close >= high_4h + DELTA:
                     send_telegram_message(f"⚠️ هشدار بالای کندل ۴H قبلی!")
                     last_alert_time = t
@@ -120,7 +123,7 @@ def check_and_send_signals():
                     send_telegram_message(f"⚠️ هشدار پایین کندل ۴H قبلی!")
                     last_alert_time = t
                     alert_given = True
-            else:  # نیم ساعت آخر کندل ۴H، فقط هشدار داده می‌شود، ورود نمی‌شود
+            else:  # نیم ساعت آخر کندل ۴H
                 if close >= high_4h + DELTA:
                     send_telegram_message(f"⚠️ هشدار نیم ساعت پایانی بالای کندل ۴H!")
                     last_alert_time = t
