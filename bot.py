@@ -133,7 +133,7 @@ def check_and_send_signals():
         # ورود با اوپن کندل بعد از هشدار
         if alert_given and not entry_done and last_alert_time is not None and t > last_alert_time:
             open_price = row["open"]  # اوپن کندل ۵ دقیقه‌ای
-            if alert_given == "SHORT" and open_price <= high_4h:
+            if alert_given == "SHORT" and open_price < high_4h:
                 entry_price = open_price
                 direction = "SHORT"
                 stop = entry_price * (1 + STOP_MOVE_PRICE)
@@ -147,7 +147,7 @@ def check_and_send_signals():
                     "entry_time": entry_time
                 }
                 entry_done = True
-            elif alert_given == "LONG" and open_price >= low_4h:
+            elif alert_given == "LONG" and open_price > low_4h:
                 entry_price = open_price
                 direction = "LONG"
                 stop = entry_price * (1 - STOP_MOVE_PRICE)
