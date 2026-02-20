@@ -119,7 +119,7 @@ def check_and_send_signals():
                 last_alert_time = t
             break
 
-        # ⚡ اصلاح هشدار High/Low کندل ۴H → فقط یکبار قبل از ورود معامله
+        # ⚡ هشدار High/Low کندل ۴H → فقط یکبار قبل از ورود معامله
         if alert_given is None and current_trade is None:
             if close > high_4h:
                 send_telegram_message(f"⚠️ هشدار: کندل پنج دقیقه بسته بالای سقف کندل ۴H قبلی!")
@@ -130,10 +130,11 @@ def check_and_send_signals():
                 last_alert_time = t
                 alert_given = "LONG"
 
-        # ورود بعد از کلوز کندل ۵ دقیقه‌ای بعد از هشدار (بدون تغییر)
+        # ورود با اوپن کندل بعد از هشدار
         if alert_given and not entry_done and last_alert_time is not None and t > last_alert_time:
-            if alert_given == "SHORT" and close < high_4h:
-                entry_price = close
+            open_price = row["open"]  # اوپن کندل ۵ دقیقه‌ای
+            if alert_given == "SHORT" and open_price <= high_4h:
+                entry_price = open_price
                 direction = "SHORT"
                 stop = entry_price * (1 + STOP_MOVE_PRICE)
                 target = entry_price * (1 - TARGET_MOVE_PRICE)
@@ -146,8 +147,8 @@ def check_and_send_signals():
                     "entry_time": entry_time
                 }
                 entry_done = True
-            elif alert_given == "LONG" and close > low_4h:
-                entry_price = close
+            elif alert_given == "LONG" and open_price >= low_4h:
+                entry_price = open_price
                 direction = "LONG"
                 stop = entry_price * (1 - STOP_MOVE_PRICE)
                 target = entry_price * (1 + TARGET_MOVE_PRICE)
